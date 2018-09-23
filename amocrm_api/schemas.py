@@ -12,38 +12,51 @@ class Nested(fields.Nested):
         super().__init__(*args, **kwargs)
 
 
-class Company(ResponseSchema):
+class CustomFieldsMixin:
+    # It's list if not empty, but dict if empty
+    # Amocrm truly have great api design... *sarcastic*
+    custom_fields = fields.Raw(required=True)
+
+    def create_model(self, data):
+        custom_fields = data.pop('custom_fields') or []
+        instance = super().create_model(data)
+        if hasattr(instance, '_set_custom_fields_data'):
+            instance._set_custom_fields_data(custom_fields)
+        return instance
+
+
+class Company(CustomFieldsMixin, ResponseSchema):
     class Meta:
         model = models.Company
 
 
-class Contact(ResponseSchema):
+class Contact(CustomFieldsMixin, ResponseSchema):
     class Meta:
         model = models.Contact
 
     # company = fields.Nested(CompanySchema)
 
 
-class Lead(ResponseSchema):
+class Lead(CustomFieldsMixin, ResponseSchema):
     class Meta:
         model = models.Lead
 
 
-class Customer(ResponseSchema):
+class Customer(CustomFieldsMixin, ResponseSchema):
     class Meta:
-        model = models.Lead
+        model = models.Customer
 
 
 class Transaction(ResponseSchema):
     class Meta:
-        model = models.Lead
+        model = models.Transaction
 
 
 class Task(ResponseSchema):
     class Meta:
-        model = models.Lead
+        model = models.Task
 
 
 class Note(ResponseSchema):
     class Meta:
-        model = models.Lead
+        model = models.Note

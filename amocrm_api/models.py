@@ -9,7 +9,7 @@ class User(ClientEntity):
     pass
 
 
-class Contact(ClientEntity):
+class Contact(custom_fields.CustomFieldsModel, ClientEntity):
     id = fields.Int(required=True)
     name = fields.Str(required=True)
     created_by_id = fields.Int(required=True, data_key='created_by')
@@ -34,25 +34,25 @@ class SystemContact(Contact):
     instant_messages = custom_fields.Multitext(name='Мгн. сообщения')
 
 
-class Lead(ClientEntity):
-    pass
+class Lead(custom_fields.CustomFieldsModel, ClientEntity):
+    _object_type = 'lead'
 
 
-class Company(ClientEntity):
-    pass
+class Company(custom_fields.CustomFieldsModel, ClientEntity):
+    _object_type = 'company'
 
 
-class Customer(ClientEntity):
-    pass
+class Customer(custom_fields.CustomFieldsModel, ClientEntity):
+    _object_type = 'customer'
 
 
 class Transaction(ClientEntity):
-    pass
+    _object_type = 'transaction'
 
 
 class Task(ClientEntity):
-    pass
+    _object_type = 'task'
 
 
 class Note(ClientEntity):
-    pass
+    _object_type = 'note'

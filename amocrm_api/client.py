@@ -9,6 +9,7 @@ from requests_client.exceptions import HTTPError, AuthError, AuthRequired
 from requests_client.utils import resolve_obj_path
 
 from . import schemas, models
+from .custom_fields import CustomFieldsModel
 from .constants import LEAD_FILTER_BY_TASKS, ELEMENT_TYPE, NOTE_TYPE
 
 
@@ -39,14 +40,14 @@ class AmocrmClient(BaseClient):
     ClientErrorMixin = AmocrmClientErrorMixin
     contact_model = models.SystemContact
 
-    __object_types = {
-        'lead': {'objects_endpoint': 'leads'},
-        'contact': {'objects_endpoint': 'contacts'},
-        'company': {'objects_endpoint': 'companies'},
-        'customer': {'objects_endpoint': 'customers'},
-        'transaction': {'objects_endpoint': 'transactions'},
-        'task': {'objects_endpoint: ''tasks'},
-        'note': {'objects_endpoint': 'notes'},
+    _object_names = {
+        'lead': 'leads',
+        'contact': 'contacts',
+        'company': 'companies',
+        'customer': 'customers',
+        'transaction': 'transactions',
+        'task': 'tasks',
+        'note': 'notes',
     }
 
     debug_level = 5
@@ -59,19 +60,27 @@ class AmocrmClient(BaseClient):
         self.base_url = self.base_url.format(domain)
         self.login_url = self.login_url.format(domain)
 
-        self.user_model = models.User
+        self.user_model = deepcopy(models.User)
+        self.user_model.client = self
 
         # Binding custom schema and custom models
-        for object_type in self.__object_types:
-            schema = getattr(self, '%s_schema' % object_type,
-                getattr(schemas, object_type.capitalize()))
-            model = getattr(self, '%s_model' % object_type,
-                getattr(models, object_type.capitalize()))
+        for object_name, objects_name in self._object_names.items():
+            model = deepcopy(getattr(self, '%s_model' % object_name,
+                getattr(models, object_name.capitalize())))
+            model.client = self
 
+            if issubclass(model, CustomFieldsModel):
+                model._bind_lazy_custom_fields_meta(
+                    lambda key=objects_name: self.account_info.custom_fields[key]
+                )
+
+            schema = getattr(self, '%s_schema' % object_name,
+                getattr(schemas, object_name.capitalize()))
             schema.Meta = deepcopy(schema.Meta)
             schema.Meta.model = model
-            setattr(self, '%s_schema' % object_type, schema)
-            setattr(self, '%s_model' % object_type, model)
+
+            setattr(self, '%s_schema' % object_name, schema)
+            setattr(self, '%s_model' % object_name, model)
 
         super().__init__(**kwargs)
 
@@ -131,12 +140,12 @@ class AmocrmClient(BaseClient):
     @lru_cache()
     def users(self):
         return {
-            int(id): models.User(client=self, **data)
+            int(id): self.user_model(**data)
             for id, data in self.account_info.users.items()
         }
 
     @auth_required
-    def _get_objects(self, object_type, params={}, ids=[],
+    def _get_objects(self, object_name, params={}, ids=[],
                      query=None, responsible_user_id=None, modified_since=None,
                      cursor=None, cursor_count=500):
         params = params.copy()
@@ -159,13 +168,16 @@ class AmocrmClient(BaseClient):
         else:
             headers = None
 
-        resp = self.get(self.__object_types[object_type]['objects_endpoint'],
+        resp = self.get(self._object_names[object_name],
                         params, headers=headers)
-        if resp.status_code == 204:
+        if resp.status_code == 204 or '_embedded' not in resp.data:
+            # Looks like we get 204 on "not found",
+            # and no "_embedded" key if not any model exists (even without filter)
+            # Got "_embedded" key error on "customers"
             resp.data = []
         else:
             resp.data = resolve_obj_path(resp.data, '_embedded.items')
-            schema = getattr(self, '%s_schema' % object_type)
+            schema = getattr(self, '%s_schema' % object_name)
             self.apply_response_schema(resp, schema, many=True)
         return resp
 
