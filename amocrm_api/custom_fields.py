@@ -1,15 +1,49 @@
-from functools import lru_cache
-
-from marshmallow import fields
+from marshmallow import fields, pre_load, post_dump
 
 from .constants import FIELD_TYPE
+from .utils import get_one, cached_property
 
 
-def _get_one(items, match):
-    matched = tuple(x for x in items if match(x))
-    if len(matched) != 1:
-        raise IndexError('matched %s items' % len(matched))
-    return matched[0]
+class CustomFieldsSchemaMixin:
+    @pre_load
+    def __pre_load(self, data):
+        custom_fields_data = data.pop('custom_fields', [])
+        for val in custom_fields_data:
+            try:
+                custom_field = self.custom_fields[val['id']]
+            except KeyError:
+                # Unbinded custom field, we can't create it dynamically
+                # because of cyrillic to eng ugly transliterations
+                # and possible name conflict issues
+                # TODO:
+                # BUT - we can have additional field to store custom fields
+                # as dict by name, for example
+                self.entity.client.logger.warn('Unbinded custom field: %s', val)
+                continue
+            else:
+                assert custom_field.name not in data
+                self.entity.client.logger.debug('Setting: meta=%s data=%s',  # WIP
+                                                custom_field.custom_field_meta, val)
+                data[custom_field.name] = val['values']
+        return data
+
+    @post_dump
+    def __pre_dump(self, data):
+        custom_fields_data = []
+        for field in self.custom_fields.values():
+            value = data.pop(field.name, None)
+            if value:
+                custom_fields_data.append({'id': field.custom_field_id, 'values': value})
+        data['custom_fields'] = custom_fields_data
+        return data
+
+    @cached_property
+    def custom_fields(self):
+        rv = {}
+        for field in self.fields.values():
+            if isinstance(field, _BaseCustomField):
+                rv[field.custom_field_id] = field
+        return rv
 
 
 class _BaseCustomField:
@@ -21,8 +55,8 @@ class _BaseCustomField:
                 raise RuntimeError('Custom field bind by id "%s" failed: %s' % exc)
         elif self.metadata.get('name'):
             try:
-                meta = _get_one(custom_fields.values(),
-                                lambda m: m.name == self.metadata['name'])
+                meta = get_one(custom_fields.values(),
+                               lambda m: m.name == self.metadata['name'])
             except IndexError as exc:
                 raise RuntimeError('Custom field bind by name "%s" failed: %s' %
                                    (self.metadata['name'], str(exc)))
@@ -30,33 +64,39 @@ class _BaseCustomField:
             raise RuntimeError('Custom field must be binded by "name" or "id"')
         return meta
 
-    def _bind_lazy_custom_fields_meta(self, custom_fields_resolve):
-        self._custom_fields_resolve = custom_fields_resolve
-
     @property
     def custom_field_meta(self):
         if not hasattr(self, '_custom_field_meta'):
-            if not hasattr(self, '_custom_fields_resolve'):
-                raise RuntimeError('Field %s not binded to custom_fields' % self.__class__)
-            self._custom_field_meta = \
-                self._get_from_custom_fields_meta(self._custom_fields_resolve())
-            del self._custom_fields_resolve
+            entity = self.parent.entity
+            self._custom_field_meta = self._get_from_custom_fields_meta(
+                entity.client.account_info['custom_fields'][entity.objects_name]
+            )
         return self._custom_field_meta
 
     @property
-    def id(self):
+    def custom_field_id(self):
         return self.custom_field_meta['id']
 
 
-class Text(_BaseCustomField, fields.String):
+class _Single(_BaseCustomField):
+    def _deserialize(self, value, attr, data):
+        assert len(value) == 1
+        return super()._deserialize(value[0]['value'], attr, data)
+
+    def _serialize(self, value, attr, obj):
+        if value is not None:
+            return [{'value': super()._serialize(value, attr, obj)}]
+
+
+class Text(_Single, fields.String):
     field_type = FIELD_TYPE.TEXT
 
 
-class Numeric(_BaseCustomField, fields.Integer):
+class Numeric(_Single, fields.Integer):
     field_type = FIELD_TYPE.NUMERIC
 
 
-class Checkbox(_BaseCustomField, fields.Boolean):
+class Checkbox(_Single, fields.Boolean):
     field_type = FIELD_TYPE.CHECKBOX
 
 
@@ -68,8 +108,18 @@ class Multiselect(_BaseCustomField, fields.List):
     field_type = FIELD_TYPE.MULTISELECT
 
 
-class Multitext(Text):
+class Multitext(_BaseCustomField, fields.Dict):
     field_type = FIELD_TYPE.MULTITEXT
+
+    def _deserialize(self, value, attr, data):
+        return {
+            self.custom_field_meta['enums'][val['enum']]: val['value']
+            for val in value
+        }
+
+    def _serialize(self, value, attr, data):
+        if value is not None:
+            return [{'enum': k, 'value': v} for k, v in value.items()]
 
 
 class Radiobutton(Select):
@@ -78,38 +128,3 @@ class Radiobutton(Select):
 
 class TextArea(Text):
     field_type = FIELD_TYPE.TEXTAREA
-
-
-class CustomFieldsModelMeta(type):
-    def __new__(metacls, cls, bases, classdict):
-        new_cls = super().__new__(metacls, cls, bases, classdict)
-        new_cls._custom_fields = {}
-
-        for attr in dir(new_cls):
-            field = getattr(new_cls, attr)
-            if isinstance(field, _BaseCustomField):
-                new_cls._custom_fields[attr] = field
-
-        return new_cls
-
-
-class CustomFieldsModel(metaclass=CustomFieldsModelMeta):
-    @classmethod
-    def _bind_lazy_custom_fields_meta(cls, custom_fields_resolve):
-        for field in cls._custom_fields.values():
-            field._bind_lazy_custom_fields_meta(custom_fields_resolve)
-
-    @property
-    @lru_cache()
-    def _custom_fields_ids(self):
-        return {int(fld.id): name for name, fld in self._custom_fields.items()}
-
-    def _set_custom_fields_data(self, items):
-        for data in items:
-            if data['id'] in self._custom_fields_ids:
-                name = self._custom_fields_ids[data['id']]
-                field = self._custom_fields[name]  # noqa
-                setattr(self, name, data['values'][0]['value'])
-
-            elif self.client.debug_level >= 2:
-                raise RuntimeError('Unknown custom field: %s' % data)

@@ -10,7 +10,7 @@ import yaml
 import coloredlogs
 from requests_client.utils import maybe_attr_dict, pprint  # noqa
 
-from amocrm_api import client as client_, schemas  # noqa
+from amocrm_api import client as client_
 from amocrm_api.constants import *  # noqa
 
 try:
