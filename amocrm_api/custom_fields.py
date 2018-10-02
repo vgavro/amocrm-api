@@ -17,7 +17,7 @@ class CustomFieldsSchemaMixin:
                 # and possible name conflict issues
                 # TODO:
                 # BUT - we can have additional field to store custom fields
-                # as dict by name, for example
+                # as dict by key name, not attr name
                 self.entity.client.logger.warn('Unbinded custom field: %s', val)
                 continue
             else:
@@ -69,7 +69,7 @@ class _BaseCustomField:
         if not hasattr(self, '_custom_field_meta'):
             entity = self.parent.entity
             self._custom_field_meta = self._get_from_custom_fields_meta(
-                entity.client.account_info['custom_fields'][entity.objects_name]
+                entity.client.account_info['custom_fields'][entity.model_plural_name]
             )
         return self._custom_field_meta
 

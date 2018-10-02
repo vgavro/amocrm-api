@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 requires = [
-    'requests-client',
+    'requests-client>=0.0.2',
 ]
 
 setup(

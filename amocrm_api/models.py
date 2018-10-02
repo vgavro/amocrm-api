@@ -1,5 +1,5 @@
 from marshmallow import fields, Schema
-from requests_client.models import ClientEntityMixin, Entity, SchemaEntity
+from requests_client.models import ClientEntityMixin, Entity, SchemedEntity
 
 from .constants import ELEMENT_TYPE
 from .utils import cached_property, get_one
@@ -9,18 +9,18 @@ from . import custom_fields
 
 class ClientMappedEntity(ClientEntityMixin, Entity):
     @classmethod
-    def get(self, id=None):
-        map = getattr(self.client, self.map_attr)
+    def get(cls, id=None):
+        map = getattr(cls.client, cls.map_attr)
         if id is None:
-            return map.values()
+            return tuple(map.values())
         try:
             return [map[int(id)]]
         except KeyError:
             return []
 
     @classmethod
-    def get_one(cls, *args, **kwargs):
-        return get_one(cls.get(*args, **kwargs))
+    def get_one(cls, id):
+        return get_one(cls.get(id))
 
 
 class User(ClientMappedEntity):
@@ -31,12 +31,20 @@ class Group(ClientMappedEntity):
     map_attr = 'groups'
 
 
-class BaseEntity(ClientEntityMixin, SchemaEntity):
-    object_name = None
-    objects_name = None
+class BaseEntity(ClientEntityMixin, SchemedEntity):
+    model_name = None
+    model_plural_name = None
     schema = type('Schema', (custom_fields.CustomFieldsSchemaMixin, Schema), {})
 
     _links = fields.Raw()
+
+    @classmethod
+    def get(cls, *args, **kwargs):
+        return getattr(cls.client, 'get_%s' % cls.model_plural_name)(*args, **kwargs).data
+
+    @classmethod
+    def get_iterator(cls, *args, **kwargs):
+        return getattr(cls.client, 'get_%s_iterator' % cls.model_plural_name)(*args, **kwargs)
 
     @classmethod
     def get_one(cls, *args, **kwargs):
@@ -59,13 +67,13 @@ class __ForElement:
 
     @cached_property
     def element(self):
-        object_name = ELEMENT_TYPE(self.element_type).name.lower()
-        return get_one(self.client._get_objects(object_name, ids=[self.element_id]).data)
+        model_name = ELEMENT_TYPE(self.element_type).name.lower()
+        return self.client.models[model_name].get(id=self.element_id)
 
 
 class Contact(__CreatedUpdatedBy, BaseEntity):
-    object_name = 'contact'
-    objects_name = 'contacts'
+    model_name = 'contact'
+    model_plural_name = 'contacts'
 
     id = fields.Int()
     name = fields.Str()
@@ -78,15 +86,6 @@ class Contact(__CreatedUpdatedBy, BaseEntity):
     customers = EntityField('customer', many=True)
     leads = EntityField('lead', many=True)
     closest_task_at = DateTimeField(allow_none=True)
-
-    @classmethod
-    def get(cls, id=[], query=None, responsible_user_id=None, modified_since=None,
-            cursor=None, cursor_count=500):
-        # https://www.amocrm.ru/developers/content/api/contacts
-
-        return cls.client.get_objects(cls, id=id,
-            query=query, responsible_user_id=responsible_user_id,
-            modified_since=modified_since, cursor=cursor, cursor_count=cursor_count).data
 
     # @classmethod
     # def add(cls, **kwargs):
@@ -104,8 +103,8 @@ class SystemContact(Contact):
 
 
 class Lead(__CreatedUpdated, BaseEntity):
-    object_name = 'lead'
-    objects_name = 'leads'
+    model_name = 'lead'
+    model_plural_name = 'leads'
 
     id = fields.Int()
     name = fields.Str()
@@ -127,8 +126,8 @@ class Lead(__CreatedUpdated, BaseEntity):
 
 
 class Company(__CreatedUpdatedBy, BaseEntity):
-    object_name = 'company'
-    objects_name = 'companies'
+    model_name = 'company'
+    model_plural_name = 'companies'
 
     id = fields.Int()
     name = fields.Str()
@@ -140,22 +139,22 @@ class Company(__CreatedUpdatedBy, BaseEntity):
 
 
 class Customer(BaseEntity):
-    object_name = 'customer'
-    objects_name = 'customers'
+    model_name = 'customer'
+    model_plural_name = 'customers'
 
     id = fields.Int()
 
 
 class Transaction(BaseEntity):
-    object_name = 'transaction'
-    objects_name = 'transactions'
+    model_name = 'transaction'
+    model_plural_name = 'transactions'
 
     id = fields.Int()
 
 
 class Task(__CreatedUpdated, __ForElement, BaseEntity):
-    object_name = 'task'
-    objects_name = 'tasks'
+    model_name = 'task'
+    model_plural_name = 'tasks'
 
     id = fields.Int()
     account_id = fields.Int()
@@ -170,8 +169,8 @@ class Task(__CreatedUpdated, __ForElement, BaseEntity):
 
 
 class Note( __CreatedUpdated, __ForElement, BaseEntity):
-    object_name = 'note'
-    objects_name = 'notes'
+    model_name = 'note'
+    model_plural_name = 'notes'
 
     id = fields.Int()
 
@@ -184,8 +183,8 @@ class Note( __CreatedUpdated, __ForElement, BaseEntity):
 
 
 class Pipeline(BaseEntity):
-    object_name = 'pipeline'
-    objects_name = 'pipelines'
+    model_name = 'pipeline'
+    model_plural_name = 'pipelines'
 
     id = fields.Int()
     name = fields.Str()

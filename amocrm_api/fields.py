@@ -1,5 +1,5 @@
 from marshmallow import fields
-from requests_client.fields import DateTimeField, EntityField, BindPropertyField
+from requests_client.fields import DateTimeField, SchemedEntityField, BindPropertyField
 
 
 class DateTimeField(DateTimeField):
@@ -19,7 +19,7 @@ class TagsField(fields.Field):
             return ','.join(value)
 
 
-class EntityField(EntityField):
+class EntityField(SchemedEntityField):
     def resolve_entity(self, entity):
         if isinstance(entity, str):
             return getattr(self.parent.entity.client, self.entity)
@@ -41,12 +41,12 @@ class EntityField(EntityField):
 class UserIdField(BindPropertyField):
     container = fields.Int
 
-    def resolver(self, uid):
+    def getter(self, uid):
         return uid is not None and self.parent.entity.client.users[uid] or None
 
 
 class GroupIdField(BindPropertyField):
     container = fields.Int
 
-    def resolver(self, gid):
+    def getter(self, gid):
         return gid is not None and self.parent.entity.client.groups[gid] or None
