@@ -97,10 +97,10 @@ class Contact(__CreatedUpdatedBy, BaseEntity):
 class SystemContact(Contact):
     # This is contact model with created custom fields in AmoCRM by default
     # This fields are deletable, so consider it more like example
-    position = custom_fields.Text(name='Должность')
-    phone = custom_fields.Multitext(name='Телефон')
-    email = custom_fields.Multitext(name='Email')
-    instant_messages = custom_fields.Multitext(name='Мгн. сообщения')
+    position = custom_fields.TextField(code='POSITION')
+    phone = custom_fields.MultiTextField(code='PHONE')
+    email = custom_fields.MultiTextField(code='EMAIL')
+    instant_messages = custom_fields.MultiTextField(code='IM')
 
 
 class Lead(__CreatedUpdated, BaseEntity):

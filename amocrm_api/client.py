@@ -189,9 +189,9 @@ class AmocrmClient(BaseClient):
 
         # NOTE on add:
         # If we have added some entities, but some of them failed with errors,
-        # because of shitty api design we can't determine WHICH
-        # entities were added and which were failed, so we can't bind new id
-        # or errors to specific objects and should raise exception anyway
+        # because of shitty api design we can't determine WHICH entities were added
+        # and which were failed, so we can't bind new id or errors to specific objects,
+        # so we should consider all added objects were failed with corresponding message
 
         for i, item in enumerate(resp.data):
             if i < len(add) and not errors['add']:
@@ -257,7 +257,7 @@ class AmocrmClient(BaseClient):
             add, update = add_or_update_map[model]
             delete = delete_map[model]
             resp = self._post_objects(model, add, update, delete)
-            if raise_on_errors and resp.errors:
+            if raise_on_errors and sum(len(v) for v in resp.errors.values()):
                 raise PostError(resp, str(resp.errors), model,
                     [obj for obj in add if 'error' in obj.meta],
                     [obj for obj in update.values() if 'error' in obj.meta],
