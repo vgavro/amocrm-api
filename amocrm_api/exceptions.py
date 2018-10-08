@@ -20,9 +20,9 @@ class AmocrmClientErrorMixin:
 
 class PostError(AmocrmClientErrorMixin, ClientError):
     def __init__(self, resp, msg, model, add=[], update=[], delete=[]):
-        model = model if isinstance(model, str) else model.object_name
+        model = model if isinstance(model, str) else model.model_name
         self.model = model
         self.add = add
         self.update = update
         self.delete = delete
-        super().__init__(resp, msg, model, update, delete)
+        super().__init__(resp, msg, model, add, update, delete)

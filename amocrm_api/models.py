@@ -100,7 +100,7 @@ class SystemContact(Contact):
     position = custom_fields.TextField(code='POSITION')
     phone = custom_fields.MultiTextField(code='PHONE')
     email = custom_fields.MultiTextField(code='EMAIL')
-    instant_messages = custom_fields.MultiTextField(code='IM')
+    im = custom_fields.MultiTextField(code='IM')
 
 
 class Lead(__CreatedUpdated, BaseEntity):

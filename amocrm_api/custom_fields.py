@@ -2,14 +2,22 @@ from copy import deepcopy
 from collections import UserDict, defaultdict, Mapping, namedtuple
 
 from marshmallow import Schema, fields, pre_load, pre_dump, validate, ValidationError
+from multidict import MultiDict
+from requests_client.models import Entity
 
 from .constants import FIELD_TYPE
 from .utils import get_one, cached_property
 
 
-SmartAddress = namedtuple('SmartAddress', ['addr1 addr2 city region index country'])
-SmartAddress.__new__.__defaults__ = (None,) * len(SmartAddress._fields)
-# country code should be in ISO 3166-1 alpha-2 format
+class SmartAddress(Entity):
+    __slots__ = 'address1 address2 city region index country'.split()
+    # country code should be in ISO 3166-1 alpha-2 format
+
+
+class LegalEntity(Entity):
+    __slots__ = (
+        'name entity_type vat_id tax_registration_reason_code address kpp external_uid'
+    ).split()
 
 
 class _CustomFieldsData(UserDict):
@@ -41,7 +49,7 @@ class _CustomFieldsData(UserDict):
 
     def __str__(self):
         return '<CustomFieldsData(' + ', '.join(
-            '%d:%s=%s' % (id, self._id_name_map[id], value)
+            '%d:%s=%s' % (id, self._id_name_map.get(id, '__NAME_NOT_FOUND'), value)
             for id, value in self.data.items()
         ) + ')>'
 
@@ -231,7 +239,7 @@ class MultiSelectField(_SingleMixin, _EnumsMixin, _CustomFieldMixin, fields.Raw)
             self.enum_validator(v)
         return values
 
-    def _serialize(self, value, attr, data):
+    def _serialize(self, value, attr, obj):
         if value is not None:
             if not isinstance(value, (list, set, tuple)):
                 raise ValidationError('Expected enum list %s, got %s' %
@@ -254,12 +262,12 @@ class MultiTextField(_SingleMixin, _EnumsMixin, _CustomFieldMixin, fields.Raw):
     field_type = FIELD_TYPE.MULTITEXT
 
     def _deserialize(self, value, attr, data):
-        return {
-            self.custom_field_meta['enums'][v['enum']]: v['value']
+        return MultiDict(
+            (self.custom_field_meta['enums'][v['enum']], v['value'])
             for v in value
-        }
+        )
 
-    def _serialize(self, value, attr, data):
+    def _serialize(self, value, attr, obj):
         if value is not None:
             if not isinstance(value, Mapping):
                 raise ValidationError('Expected enum mapping %s, got %s' %
@@ -291,13 +299,13 @@ class SmartAddressField(_SingleMixin, _CustomFieldMixin, fields.Raw):
             for v in value
         })
 
-    def _serialize(self, value, attr, data):
+    def _serialize(self, value, attr, obj):
         if value is not None:
             if not isinstance(value, SmartAddress):
                 raise ValidationError('Expected SmartAddress, got %s' % type(value))
             return [
                 {'subtype': i + 1, 'value': getattr(value, name)}
-                for i, name in enumerate(SmartAddress._fields) if getattr(value, name)
+                for i, name in enumerate(SmartAddress._fields) if hasattr(value, name)
             ]
 
 
@@ -305,9 +313,20 @@ class BirthdayField(DateField):
     field_type = FIELD_TYPE.BIRTHDAY
 
 
-class LegalEntityField(_SingleMixin, _CustomFieldMixin, fields.Dict):
-    # TODO: not implemented
+class LegalEntityField(_CustomFieldMixin, fields.Raw):
     field_type = FIELD_TYPE.legal_entity
+
+    def _deserialize(self, value, attr, data):
+        if value:
+            return [LegalEntity(**v['value']) for v in value]
+
+    def _serialize(self, value, attr, data):
+        if not isinstance(value, (tuple, set, list)):
+            raise ValidationError('Expected list, got %s' % type(value))
+        if not all(isinstance(v, LegalEntity) for v in value):
+            raise ValidationError('list should contain LegalEntity instances')
+        return [{'value': {k: getattr(v, k, None)
+                for k in LegalEntity._fields}} for v in value]
 
 
 class ItemsField(_CustomFieldMixin, fields.Raw):

@@ -1,6 +1,6 @@
 import json
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import timezone
 from email.utils import format_datetime
 from collections import defaultdict
 from functools import wraps
@@ -8,7 +8,7 @@ from functools import wraps
 from requests_client.client import BaseClient, auth_required
 from requests_client.cursor_fetch import CursorFetchGenerator
 from requests_client.exceptions import HTTPError, AuthError, AuthRequired
-from requests_client.utils import resolve_obj_path
+from requests_client.utils import resolve_obj_path, utcnow
 
 from . import models
 from .exceptions import AmocrmClientErrorMixin, PostError
@@ -168,7 +168,7 @@ class AmocrmClient(BaseClient):
         }
         resp = self.post(model.model_plural_name, data=payload)
 
-        errors = resolve_obj_path(resp.data, '_embedded.errors') or {}
+        errors = resolve_obj_path(resp.data, '_embedded.errors', None) or {}
         # Fixing this PHP array shit
         if isinstance(errors, list):
             errors = {'add': errors[0]}
@@ -203,11 +203,12 @@ class AmocrmClient(BaseClient):
 
                 field = updated.schema.fields['updated_at']
                 updated_at = field._deserialize(item['updated_at'], 'updated_at', item)
-                if updated.updated_at != updated_at:
-                    self.logger.warn('updated_at != %s: %s', updated_at, updated)
+                if updated.updated_at and updated.updated_at.replace(microsecond=0) != updated_at:
+                    self.logger.warn('updated_at mismatch: %s != %s', updated_at,
+                                     updated.updated_at.replace(microsecond=0))
                 updated.updated_at = updated_at
 
-        for i, obj in added:
+        for i, obj in enumerate(add):
             if errors['add']:
                 if len(add) == len(errors['add']):
                     error = errors['add'][i]
@@ -233,14 +234,24 @@ class AmocrmClient(BaseClient):
                      raise_on_errors=False):
         # add_or_update - add (without obj.id) or update(with obj.id)
         # delete - delete objs
-        # updated_at - should renew updated_at field?
+        # updated_at - should renew updated_at field
+
+        if updated_at:
+            if updated_at is True:
+                updated_at = utcnow()
+            updated_at = updated_at.replace(microsecond=0)
 
         add_or_update_map = defaultdict(lambda: ([], {}))  # add, update
         for obj in add_or_update:
             add, update = add_or_update_map[obj.__class__]
             if obj.id is not None:
                 if updated_at:
-                    obj.updated_at = datetime.utcnow() if updated_at is True else updated_at
+                    if not obj.updated_at or obj.updated_at <= updated_at:
+                        obj.updated_at = updated_at
+                    else:
+                        # This will cause error on backend side in case of older updated_at
+                        self.logger.warn('Skipping updated_at set: %s already has newer '
+                                         '%s > %s', obj.model_name, obj.updated_at, updated_at)
 
                 assert int(obj.id) not in update, 'Duplicated id: %s' % obj.id
                 update[int(obj.id)] = obj
