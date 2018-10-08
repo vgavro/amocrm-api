@@ -3,6 +3,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from email.utils import format_datetime
 from collections import defaultdict
+from functools import wraps
 
 from requests_client.client import BaseClient, auth_required
 from requests_client.cursor_fetch import CursorFetchGenerator
@@ -13,6 +14,23 @@ from . import models
 from .exceptions import AmocrmClientErrorMixin, PostError
 from .constants import LEAD_FILTER_BY_TASKS, ELEMENT_TYPE, NOTE_TYPE
 from .utils import cached_property, maybe_qs_list
+
+
+def _get_objects_iterator(func, cursor_count=500):
+    # NOTE: because of bad amocrm api design, we have offset instead of real cursor ident,
+    # so we can't be sure that we're not skipping some entities if some new
+    # were added while iteration is in progress
+
+    @wraps(func)
+    def iterator(*args, cursor=None, cursor_count=cursor_count, cursor_kwargs={}, **kwargs):
+        def fetch(generator):
+            resp = func(*args, **kwargs, cursor=generator.cursor, cursor_count=cursor_count)
+            generator.has_more = (len(resp.data) >= cursor_count)
+            generator.cursor += len(resp.data)
+            return resp.data
+        return CursorFetchGenerator(cursor=cursor, reverse_iterable=False,
+                                    fetch_callback=fetch, **cursor_kwargs)
+    return iterator
 
 
 class AmocrmClient(BaseClient):
@@ -41,9 +59,7 @@ class AmocrmClient(BaseClient):
         # Binding models to client and creating client.get_*_iterator
         self.models = {}
         for model_name in self.__model_names:
-            model = self.models[model_name] = self._bind_model(model_name)
-            if hasattr(self, 'get_%s' % model.model_plural_name):
-                self._bind_get_objects_iterator('get_%s' % model.model_plural_name)
+            self.models[model_name] = self._bind_model(model_name)
 
         super().__init__(**kwargs)
 
@@ -52,22 +68,6 @@ class AmocrmClient(BaseClient):
         model._client = self
         setattr(self, model_name, model)
         return model
-
-    def _bind_get_objects_iterator(self, method_name, cursor_count=500):
-        # NOTE: because of bad amocrm api design, we have offset instead of real cursor ident,
-        # so we can't be sure that we're not skipping some entities if some new
-        # were added while iteration is in progress
-        method = getattr(self, method_name)
-
-        def iterator(*args, cursor=None, cursor_count=cursor_count, cursor_kwargs={}, **kwargs):
-            def fetch(generator):
-                resp = method(*args, **kwargs, cursor=generator.cursor, cursor_count=cursor_count)
-                generator.has_more = (len(resp.data) >= cursor_count)
-                generator.cursor += len(resp.data)
-                return resp.data
-            return CursorFetchGenerator(cursor=cursor, reverse_iterable=False,
-                                        fetch_callback=fetch, **cursor_kwargs)
-        setattr(self, '%s_iterator' % method_name, iterator)
 
     @property
     def auth_ident(self):
@@ -167,23 +167,38 @@ class AmocrmClient(BaseClient):
             'delete': tuple(delete_map.keys()),
         }
         resp = self.post(model.model_plural_name, data=payload)
+
+        errors = resolve_obj_path(resp.data, '_embedded.errors') or {}
+        # Fixing this PHP array shit
+        if isinstance(errors, list):
+            errors = {'add': errors[0]}
+        elif '0' in errors:
+            errors['add'] = errors.pop('0')
+        errors.setdefault('add', [])
+        errors.setdefault('update', {})
+        errors.setdefault('delete', {})
+        resp.errors = errors
+
         resp.data = resolve_obj_path(resp.data, '_embedded.items') or []
-        resp.errors = errors = resp.data.get('errors', {})
 
         if (
-            (len(resp.data) + len(errors.get('update', {})) + len(errors.get('delete', {}))) !=
+            (len(resp.data) + sum(len(errors[k]) for k in errors)) !=
             (len(add) + len(update_map) + len(delete_map))
         ):
-            raise self.ClientError(resp, 'Items count not matched')
+            raise self.ClientError(resp, 'Response items count not matched')
+
+        # NOTE on add:
+        # If we have added some entities, but some of them failed with errors,
+        # because of shitty api design we can't determine WHICH
+        # entities were added and which were failed, so we can't bind new id
+        # or errors to specific objects and should raise exception anyway
 
         for i, item in enumerate(resp.data):
-            if i < len(add):
-                # Actually, I wasn't able to get error on add,
-                # so it's not obvious how to bind new ids in that case
+            if i < len(add) and not errors['add']:
                 assert 'updated_at' not in item
                 added = add[i]
                 added.id = int(item['id'])
-            else:
+            elif 'updated_at' in item:
                 updated = update_map[int(item['id'])]
 
                 field = updated.schema.fields['updated_at']
@@ -192,15 +207,26 @@ class AmocrmClient(BaseClient):
                     self.logger.warn('updated_at != %s: %s', updated_at, updated)
                 updated.updated_at = updated_at
 
+        for i, obj in added:
+            if errors['add']:
+                if len(add) == len(errors['add']):
+                    error = errors['add'][i]
+                else:
+                    error = 'Maybe not added (possible errors %s)' % set(errors['add'])
+                obj.meta['error'] = error
+                self.logger.error('add failed: "%s" for %s', error, obj)
+            else:
+                obj.meta.pop('error', None)
+
         for action, obj_map in (('update', update_map), ('delete', delete_map)):
             # Iterating over objs instead of errors to clear previous message if any
             for id, obj in obj_map.items():
                 error = errors.get(action, {}).get(str(id))
                 if error:
                     self.logger.error('%s failed: "%s" for %s', action, error, obj)
-                    obj.meta['%s_error' % action] = error
+                    obj.meta['error'] = error
                 else:
-                    obj.meta.pop('%s_error' % action, None)
+                    obj.meta.pop('error', None)
         return resp
 
     def post_objects(self, add_or_update=[], delete=[], updated_at=True,
@@ -233,8 +259,9 @@ class AmocrmClient(BaseClient):
             resp = self._post_objects(model, add, update, delete)
             if raise_on_errors and resp.errors:
                 raise PostError(resp, str(resp.errors), model,
-                    [obj for obj in update.values() if 'update_error' in obj.meta],
-                    [obj for obj in delete.values() if 'delete_error' in obj.meta],
+                    [obj for obj in add if 'error' in obj.meta],
+                    [obj for obj in update.values() if 'error' in obj.meta],
+                    [obj for obj in delete.values() if 'error' in obj.meta],
                 )
             rv.append(resp)
         return rv
@@ -247,6 +274,8 @@ class AmocrmClient(BaseClient):
             query=query, responsible_user_id=responsible_user_id,
             modified_since=modified_since, cursor=cursor, cursor_count=cursor_count
         )
+
+    get_contacts_iterator = _get_objects_iterator(get_contacts)
 
     def get_leads(self, id=[], status_id=[], datetimes_create=None,
                   datetimes_modify=None, tasks=None, is_active=None,
@@ -266,6 +295,8 @@ class AmocrmClient(BaseClient):
             modified_since=modified_since, cursor=cursor, cursor_count=cursor_count
         )
 
+    get_leads_iterator = _get_objects_iterator(get_leads)
+
     def get_companies(self, id=[], query=None, responsible_user_id=None,
                       modified_since=None, cursor=None, cursor_count=500):
         # https://www.amocrm.ru/developers/content/api/companies
@@ -275,6 +306,8 @@ class AmocrmClient(BaseClient):
             modified_since=modified_since, cursor=cursor, cursor_count=cursor_count
         )
 
+    get_companies_iterator = _get_objects_iterator(get_companies)
+
     def get_customers(self, id=[], cursor=None, cursor_count=500):
         # https://www.amocrm.ru/developers/content/api/customers
         # TODO: filters not implemented
@@ -282,6 +315,8 @@ class AmocrmClient(BaseClient):
         return self._get_objects(self.customer, id=id,
             cursor=cursor, cursor_count=cursor_count
         )
+
+    get_customers_iterator = _get_objects_iterator(get_customers)
 
     def get_transactions(self, id=[], customer_id=[], cursor=None, cursor_count=500):
         # https://www.amocrm.ru/developers/content/api/customers
@@ -292,6 +327,8 @@ class AmocrmClient(BaseClient):
         return self._get_objects(self.transaction, params, id=id,
             cursor=cursor, cursor_count=cursor_count
         )
+
+    get_transactions_iterator = _get_objects_iterator(get_transactions)
 
     def get_tasks(self, id=[], element_id=[], element_type=None,
                   responsible_user_id=None, cursor=None, cursor_count=500):
@@ -306,6 +343,8 @@ class AmocrmClient(BaseClient):
             cursor=cursor, cursor_count=cursor_count
         )
 
+    get_tasks_iterator = _get_objects_iterator(get_tasks)
+
     def get_notes(self, element_type, id=[], element_id=[], note_type=None,
                   modified_since=None, cursor=None, cursor_count=500):
         # https://www.amocrm.ru/developers/content/api/notes
@@ -318,6 +357,8 @@ class AmocrmClient(BaseClient):
         return self._get_objects(self.note, params, id=id, modified_since=modified_since,
             cursor=cursor, cursor_count=cursor_count
         )
+
+    get_notes_iterator = _get_objects_iterator(get_notes)
 
     def get_pipelines(self, id=[]):
         # https://www.amocrm.ru/developers/content/api/pipelines

@@ -1,4 +1,4 @@
-from marshmallow import fields, Schema
+from marshmallow import fields
 from requests_client.models import ClientEntityMixin, Entity, SchemedEntity
 
 from .constants import ELEMENT_TYPE
@@ -34,7 +34,7 @@ class Group(ClientMappedEntity):
 class BaseEntity(ClientEntityMixin, SchemedEntity):
     model_name = None
     model_plural_name = None
-    schema = type('Schema', (custom_fields.CustomFieldsSchemaMixin, Schema), {})
+    schema = custom_fields.CustomFieldsSchema()
 
     _links = fields.Raw()
 
@@ -49,6 +49,12 @@ class BaseEntity(ClientEntityMixin, SchemedEntity):
     @classmethod
     def get_one(cls, *args, **kwargs):
         return get_one(cls.get(*args, **kwargs))
+
+    def save(self):
+        self.client.post_objects(add_or_update=[self], raise_on_errors=True)
+
+    def delete(self):
+        self.client.post_objects(delete=[self], raise_on_errors=True)
 
 
 class __CreatedUpdated:
@@ -68,7 +74,7 @@ class __ForElement:
     @cached_property
     def element(self):
         model_name = ELEMENT_TYPE(self.element_type).name.lower()
-        return self.client.models[model_name].get(id=self.element_id)
+        return self.client.models[model_name].get_one(id=self.element_id)
 
 
 class Contact(__CreatedUpdatedBy, BaseEntity):
@@ -86,11 +92,6 @@ class Contact(__CreatedUpdatedBy, BaseEntity):
     customers = EntityField('customer', many=True)
     leads = EntityField('lead', many=True)
     closest_task_at = DateTimeField(allow_none=True)
-
-    # @classmethod
-    # def add(cls, **kwargs):
-    #     instance = cls(**kwargs)
-    #     self.client.add_contacts([instance.dump()])
 
 
 class SystemContact(Contact):
@@ -112,7 +113,7 @@ class Lead(__CreatedUpdated, BaseEntity):
     responsible_user_id = UserIdField('responsible_user')
     group_id = GroupIdField('group')
 
-    contacts = EntityField('contacts', many=True)
+    contacts = EntityField('contact', many=True)
 
     is_deleted = fields.Bool()
     status_id = fields.Int()
@@ -135,7 +136,7 @@ class Company(__CreatedUpdatedBy, BaseEntity):
     responsible_user_id = UserIdField('responsible_user')
     group_id = GroupIdField('group')
 
-    contacts = EntityField('contacts', many=True)
+    contacts = EntityField('contact', many=True)
 
 
 class Customer(BaseEntity):
