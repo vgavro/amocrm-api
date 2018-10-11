@@ -1,4 +1,3 @@
-import json
 from copy import deepcopy
 from datetime import timezone
 from email.utils import format_datetime
@@ -6,14 +5,14 @@ from collections import defaultdict
 from functools import wraps
 
 from requests_client.client import BaseClient, auth_required
-from requests_client.cursor_fetch import CursorFetchGenerator
+from requests_client.cursor_fetch import CursorFetchIterator
 from requests_client.exceptions import HTTPError, AuthError, AuthRequired
-from requests_client.utils import resolve_obj_path, utcnow
+from requests_client.utils import resolve_obj_path, utcnow, cached_property
 
 from . import models
 from .exceptions import AmocrmClientErrorMixin, PostError
 from .constants import LEAD_FILTER_BY_TASKS, ELEMENT_TYPE, NOTE_TYPE
-from .utils import cached_property, maybe_qs_list
+from .utils import maybe_qs_list
 
 
 def _get_objects_iterator(func, cursor_count=500):
@@ -28,8 +27,7 @@ def _get_objects_iterator(func, cursor_count=500):
             generator.has_more = (len(resp.data) >= cursor_count)
             generator.cursor += len(resp.data)
             return resp.data
-        return CursorFetchGenerator(cursor=cursor, reverse_iterable=False,
-                                    fetch_callback=fetch, **cursor_kwargs)
+        return CursorFetchIterator(fetch, cursor=cursor, **cursor_kwargs)
     return iterator
 
 
@@ -43,18 +41,19 @@ class AmocrmClient(BaseClient):
     ClientErrorMixin = AmocrmClientErrorMixin
     contact = models.SystemContact
 
-    __model_names = ['user', 'group', 'lead', 'contact', 'company', 'customer',
-                     'transaction', 'task', 'note', 'pipeline']
+    __model_names = ('user', 'group', 'lead', 'contact', 'company', 'customer',
+                     'transaction', 'task', 'note', 'pipeline')
+    __model_names_ajax_delete = ('contact', 'lead')
 
     debug_level = 5
     base_url = 'https://{}.amocrm.ru/api/v2/'
     login_url = 'https://{}.amocrm.ru/private/api/auth.php?type=json'
     _state_attributes = ['cookies']
 
-    def __init__(self, login, hash, domain, **kwargs):
-        self.login, self.hash, self.domain = login, hash, domain
-        self.base_url = self.base_url.format(domain)
-        self.login_url = self.login_url.format(domain)
+    def __init__(self, login, hash, subdomain, **kwargs):
+        self.login, self.hash, self.subdomain = login, hash, subdomain
+        self.base_url = self.base_url.format(subdomain)
+        self.login_url = self.login_url.format(subdomain)
 
         # Binding models to client and creating client.get_*_iterator
         self.models = {}
@@ -71,7 +70,7 @@ class AmocrmClient(BaseClient):
 
     @property
     def auth_ident(self):
-        return '{}:{}'.format(self.login, self.domain)
+        return '{}:{}'.format(self.login, self.subdomain)
 
     @property
     def is_authenticated(self):
@@ -81,13 +80,12 @@ class AmocrmClient(BaseClient):
 
     def authenticate(self):
         payload = dict(USER_LOGIN=self.login, USER_HASH=self.hash)
-        resp = self.post(self.login_url, data=payload)
+        resp = self.post(self.login_url, json=payload)
         if self.is_authenticated:
             self._set_authenticated(data=resp.data)
         return resp
 
     def _request(self, method, url, params=None, data=None, **kwargs):
-        data = json.dumps(data) if data else data
         try:
             return super()._send_request(method, url, params=params, data=data,
                                          **kwargs)
@@ -105,13 +103,19 @@ class AmocrmClient(BaseClient):
     def get_account_info(self, with_=None):
         # https://www.amocrm.ru/developers/content/api/account
         with__ = ['custom_fields', 'users', 'pipelines', 'groups', 'note_types', 'task_types']
-        return self.get('account?with=%s' % ','.join(with_ is None and with__ or with_))
+        resp = self.get('account?with=%s' % ','.join(with_ is None and with__ or with_))
+        resp.data.update(resp.data.pop('_embedded'))
+        return resp
+
+    # Not using for now
+    # def _clear_account_info_cache(self):
+    #     for key in 'account_info users current_user groups pipelines'.split():
+    #         if key in self.__dict__:
+    #             del self.__dict__[key]
 
     @cached_property
     def account_info(self):
-        data = self.get_account_info().data
-        data.update(data.pop('_embedded'))
-        return data
+        return self.get_account_info().data
 
     @cached_property
     def users(self):
@@ -121,8 +125,19 @@ class AmocrmClient(BaseClient):
         }
 
     @cached_property
+    def current_user(self):
+        return self.users[self.account_info.current_user]
+
+    @cached_property
     def groups(self):
         return {group['id']: self.group(**group) for group in self.account_info.groups}
+
+    @cached_property
+    def pipelines(self):
+        return {
+            int(id): self.pipeline.load(data)
+            for id, data in self.account_info.pipelines.items()
+        }
 
     @auth_required
     def _get_objects(self, model, id=[], params={}, query=None, responsible_user_id=None,
@@ -160,25 +175,56 @@ class AmocrmClient(BaseClient):
         return resp
 
     @auth_required
+    def _ajax_delete_objects(self, model, delete_map):
+        # Actually this is fix for models that can't be deleted using
+        # standard api interface (for some reason), but obviously should be
+        resp = self.post('/ajax/%s/multiple/delete/' % model.model_plural_name,
+                         data=list(('ID[]', id) for id in delete_map),
+                         headers={'X-Requested-With': 'XMLHttpRequest'})
+        if isinstance(delete_map, dict):
+            # Allowing delete only by id otherwise
+            for obj in delete_map.values():
+                if resp.data.status != 'success':
+                    obj.meta['error'] = resp.data.message
+                else:
+                    obj.meta.pop('error', None)
+        return resp
+
+    @auth_required
     def _post_objects(self, model, add, update_map, delete_map):
         payload = {
             'add': [obj.dump() for obj in add],
             'update': [obj.dump() for obj in update_map.values()],
             'delete': tuple(delete_map.keys()),
         }
-        resp = self.post(model.model_plural_name, data=payload)
+        resp = self.post(model.model_plural_name, json=payload)
 
-        errors = resolve_obj_path(resp.data, '_embedded.errors', None) or {}
+        errors = resolve_obj_path(resp.data, '_embedded.errors', {}) or {}
         # Fixing this PHP array shit
         if isinstance(errors, list):
-            errors = {'add': errors[0]}
+            errors = {'add': errors[0] or {}}
         elif '0' in errors:
             errors['add'] = errors.pop('0')
-        errors.setdefault('add', [])
+        errors.setdefault('add', {})
         errors.setdefault('update', {})
         errors.setdefault('delete', {})
-        resp.errors = errors
 
+        # We should have adding errors as dict with add index binded as keys,
+        # and in some enpoints (leads) items[].request_id corresponds to add index,
+        # BUT for some endpoints (contacts) we may have adding errors as lists instead
+        # and request_id=0 for all added, then we can't determine WHICH entities were ok
+        # and which were failed, so we can't bind new id or errors to specific objects,
+        # so we should consider all added objects were failed with corresponding message.
+        if isinstance(errors['add'], list):
+            if len(errors['add']) == len(add):
+                errors['add'] = {str(i): err for i, err in enumerate(errors['add'])}
+            else:
+                errors['add'] = {
+                    str(i): 'Maybe not added (possible errors %s)' % set(errors['add'])
+                    for i in range(len(add))
+                }
+
+        resp.errors = errors
         resp.data = resolve_obj_path(resp.data, '_embedded.items') or []
 
         if (
@@ -187,17 +233,15 @@ class AmocrmClient(BaseClient):
         ):
             raise self.ClientError(resp, 'Response items count not matched')
 
-        # NOTE on add:
-        # If we have added some entities, but some of them failed with errors,
-        # because of shitty api design we can't determine WHICH entities were added
-        # and which were failed, so we can't bind new id or errors to specific objects,
-        # so we should consider all added objects were failed with corresponding message
-
+        added_idxs = sorted(set(range(len(add))) - set(map(int, errors['add'])))
         for i, item in enumerate(resp.data):
-            if i < len(add) and not errors['add']:
+            if added_idxs:
                 assert 'updated_at' not in item
-                added = add[i]
+                added = add[added_idxs[0]]
                 added.id = int(item['id'])
+                added_idxs = added_idxs[1:]
+
+            # No updated_at may be in "maybe not added" scenario (see above)
             elif 'updated_at' in item:
                 updated = update_map[int(item['id'])]
 
@@ -208,23 +252,14 @@ class AmocrmClient(BaseClient):
                                      updated.updated_at.replace(microsecond=0))
                 updated.updated_at = updated_at
 
-        for i, obj in enumerate(add):
-            if errors['add']:
-                if len(add) == len(errors['add']):
-                    error = errors['add'][i]
-                else:
-                    error = 'Maybe not added (possible errors %s)' % set(errors['add'])
-                obj.meta['error'] = error
-                self.logger.error('add failed: "%s" for %s', error, obj)
-            else:
-                obj.meta.pop('error', None)
-
-        for action, obj_map in (('update', update_map), ('delete', delete_map)):
+        for action, obj_map in (
+            ('add', dict(enumerate(add))), ('update', update_map), ('delete', delete_map)
+        ):
             # Iterating over objs instead of errors to clear previous message if any
             for id, obj in obj_map.items():
                 error = errors.get(action, {}).get(str(id))
                 if error:
-                    self.logger.error('%s failed: "%s" for %s', action, error, obj)
+                    self.logger.error('%s failed: %s "%s" for %s', action, id, error, obj)
                     obj.meta['error'] = error
                 else:
                     obj.meta.pop('error', None)
@@ -232,9 +267,11 @@ class AmocrmClient(BaseClient):
 
     def post_objects(self, add_or_update=[], delete=[], updated_at=True,
                      raise_on_errors=False):
-        # add_or_update - add (without obj.id) or update(with obj.id)
-        # delete - delete objs
-        # updated_at - should renew updated_at field
+        """
+        add_or_update - add (without obj.id) or update(with obj.id)
+        delete - delete objs
+        updated_at - should renew updated_at field?
+        """
 
         if updated_at:
             if updated_at is True:
@@ -261,12 +298,22 @@ class AmocrmClient(BaseClient):
         delete_map = defaultdict(dict)
         for obj in delete:
             assert obj.id is not None
-            delete_map[obj._class__][int(obj.id)] = obj
+            delete_map[obj.__class__][int(obj.id)] = obj
 
         rv = []
         for model in (set(add_or_update_map.keys()) | set(delete_map.keys())):
             add, update = add_or_update_map[model]
             delete = delete_map[model]
+
+            if delete and model.model_name in self.__model_names_ajax_delete:
+                resp = self._ajax_delete_objects(model, delete)
+                if raise_on_errors and resp.data.status != 'success':
+                    raise PostError(resp, resp.data.message, delete=tuple(delete.values()))
+                rv.append(resp)
+                delete = {}
+                if not (add or update):
+                    continue
+
             resp = self._post_objects(model, add, update, delete)
             if raise_on_errors and sum(len(v) for v in resp.errors.values()):
                 raise PostError(resp, str(resp.errors), model,
@@ -301,7 +348,7 @@ class AmocrmClient(BaseClient):
             'filter[tasks]': tasks and LEAD_FILTER_BY_TASKS(tasks).value or None,
             'filter[active]': 1 if is_active else None,
         }
-        return self._get_objects(self.lead, params, id=id,
+        return self._get_objects(self.lead, id, params,
             query=query, responsible_user_id=responsible_user_id,
             modified_since=modified_since, cursor=cursor, cursor_count=cursor_count
         )
@@ -312,7 +359,7 @@ class AmocrmClient(BaseClient):
                       modified_since=None, cursor=None, cursor_count=500):
         # https://www.amocrm.ru/developers/content/api/companies
 
-        return self._get_objects(self.company, id=id,
+        return self._get_objects(self.company, id,
             query=query, responsible_user_id=responsible_user_id,
             modified_since=modified_since, cursor=cursor, cursor_count=cursor_count
         )
@@ -323,7 +370,7 @@ class AmocrmClient(BaseClient):
         # https://www.amocrm.ru/developers/content/api/customers
         # TODO: filters not implemented
 
-        return self._get_objects(self.customer, id=id,
+        return self._get_objects(self.customer, id,
             cursor=cursor, cursor_count=cursor_count
         )
 
@@ -335,7 +382,7 @@ class AmocrmClient(BaseClient):
         params = {
             'customer_id': customer_id and ','.join(map(str, customer_id)) or None
         }
-        return self._get_objects(self.transaction, params, id=id,
+        return self._get_objects(self.transaction, id, params,
             cursor=cursor, cursor_count=cursor_count
         )
 
@@ -349,8 +396,8 @@ class AmocrmClient(BaseClient):
             'type': element_type and ELEMENT_TYPE(element_type).name.lower() or None,
             'element_id': element_id and ','.join(map(str, element_id)) or None,
         }
-        return self._get_objects(self.task, params,
-            id=id, responsible_user_id=responsible_user_id,
+        return self._get_objects(self.task, id, params,
+            responsible_user_id=responsible_user_id,
             cursor=cursor, cursor_count=cursor_count
         )
 
@@ -365,7 +412,7 @@ class AmocrmClient(BaseClient):
             'element_id': element_id and ','.join(map(str, element_id)) or None,
             'note_type': note_type and NOTE_TYPE(note_type).value or None,
         }
-        return self._get_objects(self.note, params, id=id, modified_since=modified_since,
+        return self._get_objects(self.note, id, params, modified_since=modified_since,
             cursor=cursor, cursor_count=cursor_count
         )
 
@@ -375,4 +422,4 @@ class AmocrmClient(BaseClient):
         # https://www.amocrm.ru/developers/content/api/pipelines
         # TODO: pipelines can have cursor and cursor_count?
 
-        return self._get_objects(self.pipeline, id=id, cursor_count=None)
+        return self._get_objects(self.pipeline, id, cursor_count=None)

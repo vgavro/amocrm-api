@@ -1,12 +1,13 @@
 from copy import deepcopy
-from collections import UserDict, defaultdict, Mapping, namedtuple
+from collections import UserDict, defaultdict, Mapping
 
-from marshmallow import Schema, fields, pre_load, pre_dump, validate, ValidationError
+from marshmallow import fields, pre_load, pre_dump, validate, ValidationError
 from multidict import MultiDict
 from requests_client.models import Entity
+from requests_client.utils import cached_property
 
 from .constants import FIELD_TYPE
-from .utils import get_one, cached_property
+from .utils import get_one
 
 
 class SmartAddress(Entity):
@@ -77,7 +78,7 @@ class _CustomFields(fields.Field):
         prop = property(lambda self: self.custom_fields.get(field_id))
 
         def setter(obj, data):
-            if obj.custom_fields is None:
+            if not obj.custom_fields:
                 obj.custom_fields = self.data_cls()
             obj.custom_fields[field_id] = data
 
@@ -132,7 +133,7 @@ class _CustomFields(fields.Field):
         ]
 
 
-class CustomFieldsSchema(Schema):
+class CustomFieldsSchemaMixin:
     custom_fields = _CustomFields()
 
     @pre_dump

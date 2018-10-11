@@ -20,33 +20,49 @@ class TagsField(fields.Field):
 
 
 class EntityField(SchemedEntityField):
+    def __init__(self, *args, **kwargs):
+        self.flat_id = kwargs.pop('flat_id', None)
+        super().__init__(*args, **kwargs)
+
     def resolve_entity(self, entity):
         if isinstance(entity, str):
             return getattr(self.parent.entity.client, self.entity)
         return self.entity
 
-    def _deserialize(self, value, attr, obj):
+    def _deserialize(self, value, attr, data):
         if not value:
             # fix for {} instead of list on empty values
             if not self.many and self.allow_none:
                 return None
             if self.many:
                 value = []
-        elif isinstance(value, dict) and isinstance(value.get('id'), (list, tuple)):
-            value = [{'id': id} for id in value['id']]
+        elif self.many and isinstance(value, dict):
+            if isinstance(value.get('id'), (list, tuple)):
+                value = [{'id': id} for id in value['id']]
 
-        return super()._deserialize(value, attr, obj)
+        return super()._deserialize(value, attr, data)
+
+    def _serialize(self, value, attr, obj):
+        if value is not None:
+            if self.many:
+                if self.flat_id:
+                    return [v.id for v in value]
+                return {'id': [v.id for v in value]}
+            elif self.flat_id:
+                return value.id
+
+        return super()._serialize(value, attr, obj)
 
 
 class UserIdField(BindPropertyField):
     container = fields.Int
 
-    def getter(self, uid):
-        return uid is not None and self.parent.entity.client.users[uid] or None
+    def getter(self, id):
+        return id is not None and self.parent.entity.client.users[id] or None
 
 
 class GroupIdField(BindPropertyField):
     container = fields.Int
 
-    def getter(self, gid):
-        return gid is not None and self.parent.entity.client.groups[gid] or None
+    def getter(self, id):
+        return id is not None and self.parent.entity.client.groups[id] or None

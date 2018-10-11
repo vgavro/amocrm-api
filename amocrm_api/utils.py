@@ -1,10 +1,3 @@
-from functools import lru_cache
-
-
-def cached_property(func):
-    return property(lru_cache()(func))
-
-
 def get_one(items, match=lambda x: True):
     matched = tuple(x for x in items if match(x))
     if len(matched) != 1:

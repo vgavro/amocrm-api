@@ -1,13 +1,20 @@
-from marshmallow import fields
-from requests_client.models import ClientEntityMixin, Entity, SchemedEntity
+from marshmallow import Schema, fields
+from requests_client.models import BindedEntityMixin, Entity, SchemedEntity
+from requests_client.schemas import DumpKeySchemaMixin
+from requests_client.utils import cached_property
 
 from .constants import ELEMENT_TYPE
-from .utils import cached_property, get_one
+from .utils import get_one
 from .fields import DateTimeField, TagsField, EntityField, UserIdField, GroupIdField
+from .custom_fields import CustomFieldsSchemaMixin
 from . import custom_fields
 
 
-class ClientMappedEntity(ClientEntityMixin, Entity):
+_Schema = type('_Schema', (DumpKeySchemaMixin, Schema), {})
+_CustomFieldsSchema = type('_CustomFieldsSchema', (CustomFieldsSchemaMixin, _Schema), {})
+
+
+class ClientMappedEntity(BindedEntityMixin, Entity):
     @classmethod
     def get(cls, id=None):
         map = getattr(cls.client, cls.map_attr)
@@ -31,12 +38,23 @@ class Group(ClientMappedEntity):
     map_attr = 'groups'
 
 
-class BaseEntity(ClientEntityMixin, SchemedEntity):
+class BaseEntity(BindedEntityMixin, SchemedEntity):
     model_name = None
     model_plural_name = None
-    schema = custom_fields.CustomFieldsSchema()
+    schema = _Schema
 
+    id = fields.Int(default=None)
     _links = fields.Raw()
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        def get():
+            if self.id is None:
+                raise ValueError('No id')
+            self.update(self.__class__.get_one(id=self.id))
+        self.get = get
+        self.get_one, self.get_iterator = None, None
 
     @classmethod
     def get(cls, *args, **kwargs):
@@ -80,23 +98,26 @@ class __ForElement:
 class Contact(__CreatedUpdatedBy, BaseEntity):
     model_name = 'contact'
     model_plural_name = 'contacts'
+    schema = _CustomFieldsSchema
 
-    id = fields.Int()
     name = fields.Str()
     account_id = fields.Int()
     responsible_user_id = UserIdField('responsible_user')
     group_id = GroupIdField('group')
-
     tags = TagsField()
+
     company = EntityField('company', allow_none=True)
     customers = EntityField('customer', many=True)
     leads = EntityField('lead', many=True)
+
     closest_task_at = DateTimeField(allow_none=True)
 
 
 class SystemContact(Contact):
-    # This is contact model with created custom fields in AmoCRM by default
-    # This fields are deletable, so consider it more like example
+    """
+    This is contact model with created custom fields in AmoCRM by default.
+    This fields are deletable, so consider it more like example.
+    """
     position = custom_fields.TextField(code='POSITION')
     phone = custom_fields.MultiTextField(code='PHONE')
     email = custom_fields.MultiTextField(code='EMAIL')
@@ -106,31 +127,35 @@ class SystemContact(Contact):
 class Lead(__CreatedUpdated, BaseEntity):
     model_name = 'lead'
     model_plural_name = 'leads'
+    schema = _CustomFieldsSchema
 
-    id = fields.Int()
     name = fields.Str()
     account_id = fields.Int()
     responsible_user_id = UserIdField('responsible_user')
     group_id = GroupIdField('group')
+    tags = TagsField()
 
-    contacts = EntityField('contact', many=True)
+    # For some reason it can't be changed using api
+    # (tested with main_contact: {id:..} and changing order of contacts_id)
+    main_contact = EntityField('contact', load_only=True)
 
-    is_deleted = fields.Bool()
+    contacts = EntityField('contact', dump_key='contacts_id', flat_id=True, many=True)
+    company = EntityField('company')
+    pipeline = EntityField('pipeline', only=['id'], unknown='exclude')
+
     status_id = fields.Int()
-
+    is_deleted = fields.Bool(default=False)
     closed_at = DateTimeField(allow_none=True)
-    closest_task_at = DateTimeField(allow_none=True)
-    sale = fields.Int()
-    loss_reason_id = fields.Int()
-
-    # main_contact, #company
+    closest_task_at = DateTimeField(allow_none=True, default=None)
+    sale = fields.Int(default=0)
+    loss_reason_id = fields.Int(default=0)
 
 
 class Company(__CreatedUpdatedBy, BaseEntity):
     model_name = 'company'
     model_plural_name = 'companies'
+    schema = _CustomFieldsSchema
 
-    id = fields.Int()
     name = fields.Str()
 
     responsible_user_id = UserIdField('responsible_user')
@@ -142,22 +167,18 @@ class Company(__CreatedUpdatedBy, BaseEntity):
 class Customer(BaseEntity):
     model_name = 'customer'
     model_plural_name = 'customers'
-
-    id = fields.Int()
+    schema = _CustomFieldsSchema
 
 
 class Transaction(BaseEntity):
     model_name = 'transaction'
     model_plural_name = 'transactions'
 
-    id = fields.Int()
-
 
 class Task(__CreatedUpdated, __ForElement, BaseEntity):
     model_name = 'task'
     model_plural_name = 'tasks'
 
-    id = fields.Int()
     account_id = fields.Int()
 
     responsible_user_id = UserIdField('responsible_user')
@@ -173,8 +194,6 @@ class Note( __CreatedUpdated, __ForElement, BaseEntity):
     model_name = 'note'
     model_plural_name = 'notes'
 
-    id = fields.Int()
-
     responsible_user_id = UserIdField('responsible_user')
     group_id = GroupIdField('group')
 
@@ -183,11 +202,19 @@ class Note( __CreatedUpdated, __ForElement, BaseEntity):
     text = fields.Str(missing=None)
 
 
+class PipelineStatus(SchemedEntity):
+    id = fields.Int()
+    name = fields.Str()
+    color = fields.Str()
+    sort = fields.Int()
+    is_editable = fields.Bool()
+
+
 class Pipeline(BaseEntity):
     model_name = 'pipeline'
     model_plural_name = 'pipelines'
 
-    id = fields.Int()
     name = fields.Str()
     sort = fields.Int()
     is_main = fields.Bool()
+    statuses = fields.Dict(keys=fields.Int, values=EntityField(PipelineStatus))

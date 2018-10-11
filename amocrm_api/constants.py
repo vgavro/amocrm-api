@@ -6,6 +6,12 @@ class LEAD_FILTER_BY_TASKS(Enum):
     UNCOMPLETED = 2
 
 
+class LEAD_STATUS(Enum):
+    # Pipelines may have custom statuses, but these are required
+    SUCCESS = 142
+    FAIL = 143
+
+
 class ELEMENT_TYPE(Enum):
     # ENTITY_TYPE will be better name, but stick to amocrm terms
     # https://www.amocrm.ru/developers/content/api/notes#element_types
