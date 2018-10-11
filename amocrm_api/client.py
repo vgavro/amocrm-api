@@ -58,15 +58,18 @@ class AmocrmClient(BaseClient):
         # Binding models to client and creating client.get_*_iterator
         self.models = {}
         for model_name in self.__model_names:
-            self.models[model_name] = self._bind_model(model_name)
+            self.bind_model(model_name)
 
         super().__init__(**kwargs)
 
-    def _bind_model(self, model_name):
-        model = deepcopy(getattr(self, model_name, getattr(models, model_name.capitalize())))
+    def bind_model(self, model):
+        if isinstance(model, str):
+            model_name = model
+            model = deepcopy(getattr(self, model_name,
+                                     getattr(models, model_name.capitalize())))
         model._client = self
         setattr(self, model_name, model)
-        return model
+        self.models[model_name] = model
 
     @property
     def auth_ident(self):
@@ -107,11 +110,11 @@ class AmocrmClient(BaseClient):
         resp.data.update(resp.data.pop('_embedded'))
         return resp
 
-    # Not using for now
-    # def _clear_account_info_cache(self):
-    #     for key in 'account_info users current_user groups pipelines'.split():
-    #         if key in self.__dict__:
-    #             del self.__dict__[key]
+    def update_account_info(self):
+        for key in 'account_info users current_user groups pipelines'.split():
+            if key in self.__dict__:
+                del self.__dict__[key]
+        self.__dict__['account_info'] = self.get_account_info().data
 
     @cached_property
     def account_info(self):
