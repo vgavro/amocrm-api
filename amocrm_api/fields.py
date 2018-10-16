@@ -1,11 +1,5 @@
 from marshmallow import fields
-from requests_client.fields import DateTimeField, SchemedEntityField, BindPropertyField
-
-
-class DateTimeField(DateTimeField):
-    def __init__(self, **kwargs):
-        kwargs.setdefault('format', 'timestamp')
-        super().__init__(**kwargs)
+from requests_client.fields import SchemedEntityField, BindPropertyField
 
 
 class TagsField(fields.Field):
@@ -26,7 +20,7 @@ class EntityField(SchemedEntityField):
 
     def resolve_entity(self, entity):
         if isinstance(entity, str):
-            return getattr(self.parent.entity.client, self.entity)
+            return self.parent.entity.client.models[self.entity]
         return self.entity
 
     def _deserialize(self, value, attr, data):

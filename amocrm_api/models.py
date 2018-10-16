@@ -1,11 +1,12 @@
 from marshmallow import Schema, fields
 from requests_client.models import BindedEntityMixin, Entity, SchemedEntity
 from requests_client.schemas import DumpKeySchemaMixin
+from requests_client.fields import TimestampField
 from requests_client.utils import cached_property
 
 from .constants import ELEMENT_TYPE
 from .utils import get_one
-from .fields import DateTimeField, TagsField, EntityField, UserIdField, GroupIdField
+from .fields import TagsField, EntityField, UserIdField, GroupIdField
 from .custom_fields import CustomFieldsSchemaMixin
 from . import custom_fields
 
@@ -77,8 +78,8 @@ class BaseEntity(BindedEntityMixin, SchemedEntity):
 
 class __CreatedUpdated:
     created_by_id = UserIdField(bind_attr='created_by', data_key='created_by')
-    created_at = DateTimeField()
-    updated_at = DateTimeField()
+    created_at = TimestampField()
+    updated_at = TimestampField()
 
 
 class __CreatedUpdatedBy(__CreatedUpdated):
@@ -110,7 +111,7 @@ class Contact(__CreatedUpdatedBy, BaseEntity):
     customers = EntityField('customer', many=True)
     leads = EntityField('lead', many=True)
 
-    closest_task_at = DateTimeField(allow_none=True)
+    closest_task_at = TimestampField(zero_as_none=True, allow_none=True)
 
 
 class SystemContact(Contact):
@@ -145,8 +146,8 @@ class Lead(__CreatedUpdated, BaseEntity):
 
     status_id = fields.Int()
     is_deleted = fields.Bool(default=False)
-    closed_at = DateTimeField(allow_none=True)
-    closest_task_at = DateTimeField(allow_none=True, default=None)
+    closed_at = TimestampField(zero_as_none=True, allow_none=True)
+    closest_task_at = TimestampField(zero_as_none=True, allow_none=True, default=None)
     sale = fields.Int(default=0)
     loss_reason_id = fields.Int(default=0)
 
@@ -186,7 +187,7 @@ class Task(__CreatedUpdated, __ForElement, BaseEntity):
 
     is_completed = fields.Bool()
     task_type = fields.Int()
-    complete_till_at = DateTimeField()
+    complete_till_at = TimestampField()
     text = fields.Str()
 
 
