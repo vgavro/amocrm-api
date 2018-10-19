@@ -66,6 +66,9 @@ class AmocrmClient(BaseClient):
             model_name = model
             model = deepcopy(getattr(self, model_name,
                                      getattr(models, model_name.capitalize())))
+        else:
+            model_name = model.model_name
+
         model._client = self
         setattr(self, model_name, model)
         self.models[model_name] = model
@@ -428,13 +431,13 @@ class AmocrmClient(BaseClient):
 
     @auth_required
     def post_custom_fields(self, add=[], delete=[], raise_on_errors=True):
-        # NOTE: we get an HttpError even in one field there are incorrect parameters
+        # NOTE: we get an HTTPError even if only one field failed
         add_ = []
         for field in add:
             add_.append({
                 'name': field.metadata['name'],
                 'field_type': FIELD_TYPE(field.field_type).value,
-                'element_type': ELEMENT_TYPE(field.metadata.get('element_type')).value,
+                'element_type': ELEMENT_TYPE[field.metadata.get('element_type').name].value,
                 'origin': field.metadata.get('origin', self.subdomain),
                 'enums': field.metadata.get('enums'),
                 'is_deletable': field.metadata.get('is_deleteble', False),
@@ -454,17 +457,14 @@ class AmocrmClient(BaseClient):
         }
         try:
             resp = self.post('fields', json=payload)
+            for field in add:
+                field.metadata.get('error') and field.metadata.pop('error')
         except HTTPError as exc:
-            # NOTE: on adding/deleting the same message(detail)
-            err_msg = 'Adding contacts: system failure during work with custom fields'
-            if (exc.status == 400 and exc.data and exc.data.get('detail') == err_msg):
-                for field in add:
-                    field.metadata['error'] = exc.data['detail']
-                if raise_on_errors:
-                    raise PostError(exc.resp, exc.data['detail'], 'custom_field',
-                                    add=add, delete=delete)
-            else:
-                raise
+            for field in add:
+                field.metadata['error'] = exc.resp.json().get('detail')
+            if raise_on_errors:
+                raise PostError(exc.resp, exc.resp.json().get('detail'), 'custom_field',
+                                add=add, delete=delete)
 
         resp.data = resolve_obj_path(resp.data, '_embedded.items') or []
         for i, item in enumerate(resp.data):

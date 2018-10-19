@@ -80,7 +80,7 @@ def test_post_custom_fields(client):
     fields = []
     for i, field_type in enumerate(['TEXT', 'NUMERIC', 'CHECKBOX']):
         fields.append(CUSTOM_FIELD_MAP[FIELD_TYPE[field_type]](
-            name='Test_custom_{}'.format(i + 1),
+            name='__TEST_CUSTOM_FIELD_{}'.format(i + 1),
             element_type=ELEMENT_TYPE.CONTACT
         ))
 
@@ -90,7 +90,7 @@ def test_post_custom_fields(client):
     for i, field in enumerate(fields):
         assert field.metadata['id']
         assert field.metadata['id'] == resp.data[i]['id']
-        assert custom_fields.contacts[str(fields[i].metadata['id'])]['name'] ==\
+        assert custom_fields.contacts[str(field.metadata['id'])]['name'] ==\
             field.metadata['name']
 
     resp = client.post_custom_fields(delete=fields)
