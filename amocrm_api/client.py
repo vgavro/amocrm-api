@@ -430,43 +430,38 @@ class AmocrmClient(BaseClient):
         return self._get_objects(self.pipeline, id, cursor_count=None)
 
     @auth_required
-    def post_custom_fields(self, add=[], delete=[], raise_on_errors=True):
-        # NOTE: we get an HTTPError even if only one field failed
-        add_ = []
+    def post_custom_fields(self, add=[], delete=[]):
+        # We got PostError even only if one field failed
+
+        payload = {'add': [], 'delete': []}
         for field in add:
-            add_.append({
+            payload['add'].append({
                 'name': field.metadata['name'],
                 'field_type': FIELD_TYPE(field.field_type).value,
-                'element_type': ELEMENT_TYPE[field.metadata.get('element_type').name].value,
+                'element_type': ELEMENT_TYPE(field.metadata['element_type']).value,
                 'origin': field.metadata.get('origin', self.subdomain),
                 'enums': field.metadata.get('enums'),
                 'is_deletable': field.metadata.get('is_deleteble', False),
                 'is_visible': field.metadata.get('is_visible', True)
             })
-
-        delete_ = []
         for field in delete:
-            delete_.append({
+            payload['delete'].append({
                 'id': field.metadata['id'],
                 'origin': field.metadata.get('origin', self.subdomain)
             })
 
-        payload = {
-            'add': add_,
-            'delete': delete_,
-        }
         try:
             resp = self.post('fields', json=payload)
-            for field in add:
-                field.metadata.get('error') and field.metadata.pop('error')
         except HTTPError as exc:
-            for field in add:
-                field.metadata['error'] = exc.resp.json().get('detail')
-            if raise_on_errors:
-                raise PostError(exc.resp, exc.resp.json().get('detail'), 'custom_field',
-                                add=add, delete=delete)
+            # We get an HTTPError even if only one field failed,
+            # if field was failed on add, delete will not be processed
+            raise PostError(exc.resp, exc.get_data('detail') or 'UNKNOWN ERROR',
+                            'custom_field', add=add, delete=delete)
 
         resp.data = resolve_obj_path(resp.data, '_embedded.items') or []
+        if len(resp.data) != len(add):
+            raise self.ClientError(resp, 'Response fields count not matched')
+
         for i, item in enumerate(resp.data):
             add[i].metadata['id'] = item['id']
 

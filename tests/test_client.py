@@ -1,5 +1,6 @@
 from amocrm_api.constants import LEAD_STATUS, FIELD_TYPE, ELEMENT_TYPE
-from amocrm_api.custom_fields import create_custom_field, CUSTOM_FIELD_MAP
+from amocrm_api.custom_fields import CUSTOM_FIELD_MAP
+
 
 def test_account_info(client):
     assert client.subdomain == client.account_info.subdomain
