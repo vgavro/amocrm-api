@@ -1,5 +1,5 @@
-from amocrm_api.constants import LEAD_STATUS
-
+from amocrm_api.constants import LEAD_STATUS, FIELD_TYPE, ELEMENT_TYPE
+from amocrm_api.custom_fields import create_custom_field, CUSTOM_FIELD_MAP
 
 def test_account_info(client):
     assert client.subdomain == client.account_info.subdomain
@@ -74,3 +74,28 @@ def test_lead(client):
     client.post_objects(delete=[lead, contact1, contact2])
     assert len(client.lead.get(id=lead_id)) == 0
     assert len(client.contact.get(id=[contact1, contact2])) == 0
+
+
+def test_post_custom_fields(client):
+    fields = []
+    for i, field_type in enumerate(['TEXT', 'NUMERIC', 'CHECKBOX']):
+        fields.append(CUSTOM_FIELD_MAP[FIELD_TYPE[field_type]](
+            name='__TEST_CUSTOM_FIELD_{}'.format(i + 1),
+            element_type=ELEMENT_TYPE.CONTACT
+        ))
+
+    resp = client.post_custom_fields(add=fields)
+    client.update_account_info()
+    custom_fields = client.account_info.custom_fields
+    for i, field in enumerate(fields):
+        assert field.metadata['id']
+        assert field.metadata['id'] == resp.data[i]['id']
+        assert custom_fields.contacts[str(field.metadata['id'])]['name'] ==\
+            field.metadata['name']
+
+    resp = client.post_custom_fields(delete=fields)
+    assert len(resp.data) == 0
+    client.update_account_info()
+    custom_fields = client.account_info.custom_fields
+    for field in fields:
+        assert not custom_fields.contacts.get(str(fields[i].metadata['id']))

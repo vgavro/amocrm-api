@@ -11,7 +11,7 @@ from requests_client.utils import resolve_obj_path, utcnow, cached_property
 
 from . import models
 from .exceptions import AmocrmClientErrorMixin, PostError
-from .constants import LEAD_FILTER_BY_TASKS, ELEMENT_TYPE, NOTE_TYPE
+from .constants import LEAD_FILTER_BY_TASKS, ELEMENT_TYPE, NOTE_TYPE, FIELD_TYPE
 from .utils import maybe_qs_list
 
 
@@ -66,6 +66,9 @@ class AmocrmClient(BaseClient):
             model_name = model
             model = deepcopy(getattr(self, model_name,
                                      getattr(models, model_name.capitalize())))
+        else:
+            model_name = model.model_name
+
         model._client = self
         setattr(self, model_name, model)
         self.models[model_name] = model
@@ -425,3 +428,46 @@ class AmocrmClient(BaseClient):
         # TODO: pipelines can have cursor and cursor_count?
 
         return self._get_objects(self.pipeline, id, cursor_count=None)
+
+    @auth_required
+    def post_custom_fields(self, add=[], delete=[], raise_on_errors=True):
+        # NOTE: we get an HTTPError even if only one field failed
+        add_ = []
+        for field in add:
+            add_.append({
+                'name': field.metadata['name'],
+                'field_type': FIELD_TYPE(field.field_type).value,
+                'element_type': ELEMENT_TYPE[field.metadata.get('element_type').name].value,
+                'origin': field.metadata.get('origin', self.subdomain),
+                'enums': field.metadata.get('enums'),
+                'is_deletable': field.metadata.get('is_deleteble', False),
+                'is_visible': field.metadata.get('is_visible', True)
+            })
+
+        delete_ = []
+        for field in delete:
+            delete_.append({
+                'id': field.metadata['id'],
+                'origin': field.metadata.get('origin', self.subdomain)
+            })
+
+        payload = {
+            'add': add_,
+            'delete': delete_,
+        }
+        try:
+            resp = self.post('fields', json=payload)
+            for field in add:
+                field.metadata.get('error') and field.metadata.pop('error')
+        except HTTPError as exc:
+            for field in add:
+                field.metadata['error'] = exc.resp.json().get('detail')
+            if raise_on_errors:
+                raise PostError(exc.resp, exc.resp.json().get('detail'), 'custom_field',
+                                add=add, delete=delete)
+
+        resp.data = resolve_obj_path(resp.data, '_embedded.items') or []
+        for i, item in enumerate(resp.data):
+            add[i].metadata['id'] = item['id']
+
+        return resp
