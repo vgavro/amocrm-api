@@ -39,6 +39,7 @@ class AmocrmClient(BaseClient):
     # some fields in en docs not mentioned
 
     ClientErrorMixin = AmocrmClientErrorMixin
+    contact = models.SystemContact  # WIP
 
     __model_names = ('user', 'group', 'lead', 'contact', 'company', 'customer',
                      'transaction', 'task', 'note', 'pipeline')

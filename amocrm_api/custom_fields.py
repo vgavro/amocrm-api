@@ -115,17 +115,15 @@ class _CustomFields(fields.Field):
         })
 
     def _serialize(self, value, attr, obj):
-        if not value:
-            value = dict()
-        elif not isinstance(value, Mapping):
+        if not isinstance(value, Mapping):
             raise ValidationError('custom_fields must be mapping, not %s' % type(value))
 
         # We should do this because we may have custom fields property binded after
         # some data was set to fields, because of tricky lazy binding
-        for id, field in self.custom_fields.items():
+        for field_id, field in self.custom_fields.items():
             if field.name and field.name in obj.__dict__:
                 # Field is binded to model, but proxy property was not set yet
-                value[id] = obj.__dict__[field.name]
+                value[field_id] = obj.__dict__[field.name]
 
         return [
             {'id': id, 'values': self.custom_fields[id]._serialize(v, attr, obj)}
@@ -134,7 +132,7 @@ class _CustomFields(fields.Field):
 
 
 class CustomFieldsSchemaMixin:
-    custom_fields = _CustomFields()
+    custom_fields = _CustomFields(default={})
 
     @pre_dump
     @pre_load
