@@ -1,5 +1,7 @@
 from copy import deepcopy
 from collections import UserDict, defaultdict, Mapping
+from datetime import datetime, date
+import dateutil.parser as datetime_parcer
 
 from marshmallow import fields, pre_load, pre_dump, validate, ValidationError
 from multidict import MultiDict
@@ -251,6 +253,16 @@ class MultiSelectField(_SingleMixin, _EnumsMixin, _CustomFieldMixin, fields.Raw)
 
 class DateField(_SingleMixin, _CustomFieldMixin, fields.Date):
     field_type = FIELD_TYPE.DATE
+
+    def _deserialize(self, value, attr, data):
+        if value:
+            return datetime_parcer.parse(value[0]['value']).date()
+
+    def _serialize(self, value, attr, data):
+        if value is not None:
+            if not isinstance(value, date):
+                raise ValidationError('Expected date, got %s' % type(value))
+            return [{'value': value.isoformat()}]
 
 
 class UrlField(TextField):
